@@ -1,4 +1,4 @@
-module github.com/asticode/go-astisub
+module github.com/tassa-yoniso-manasi-karoto/go-astisub
 
 go 1.13
 
