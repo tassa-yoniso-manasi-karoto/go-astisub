@@ -1288,8 +1288,15 @@ func newScanner(i io.Reader) *bufio.Scanner {
 				return i + 1, data[0:i], nil
 			}
 			advance = i + 1
-			if len(data) > i+1 && data[i+1] == '\n' {
-				advance += 1
+			if len(data) > i+1 {
+				if data[i+1] == '\n' {
+					advance += 1
+				}
+			} else if !atEOF {
+				// A \r that ends the data read so far may be the first half
+				// of a \r\n: wait for the next byte rather than see two line
+				// breaks.
+				return 0, nil, nil
 			}
 			return advance, data[0:i], nil
 		}

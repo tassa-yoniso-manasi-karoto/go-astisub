@@ -71,24 +71,7 @@ func ReadFromSRT(i io.Reader) (o *Subtitles, err error) {
 				}
 			}
 
-			// Remove trailing empty lines
-			if len(s.Lines) > 0 {
-				for i := len(s.Lines) - 1; i >= 0; i-- {
-					if len(s.Lines[i].Items) > 0 {
-						for j := len(s.Lines[i].Items) - 1; j >= 0; j-- {
-							if len(s.Lines[i].Items[j].Text) == 0 {
-								s.Lines[i].Items = s.Lines[i].Items[:j]
-							} else {
-								break
-							}
-						}
-						if len(s.Lines[i].Items) == 0 {
-							s.Lines = s.Lines[:i]
-						}
-
-					}
-				}
-			}
+			dropEmptyLines(s)
 
 			// Init subtitle
 			s = &Item{}
@@ -138,6 +121,22 @@ func ReadFromSRT(i io.Reader) (o *Subtitles, err error) {
 		}
 	}
 	return
+}
+
+// dropEmptyLines removes the blank lines read into a subtitle: they
+// separate subtitles and carry no text. Every text line is kept, wherever
+// a blank line fell.
+func dropEmptyLines(s *Item) {
+	var lines []Line
+	for _, l := range s.Lines {
+		for len(l.Items) > 0 && len(l.Items[len(l.Items)-1].Text) == 0 {
+			l.Items = l.Items[:len(l.Items)-1]
+		}
+		if len(l.Items) > 0 {
+			lines = append(lines, l)
+		}
+	}
+	s.Lines = lines
 }
 
 // parseTextSrt parses the input line to fill the Line
