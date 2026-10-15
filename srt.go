@@ -1,6 +1,7 @@
 package astisub
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"strconv"
@@ -31,11 +32,37 @@ func parseDurationSRT(i string) (d time.Duration, err error) {
 	return
 }
 
+// isSRTTimeBoundaries reports whether the line holds time boundaries: an arrow next to
+// what can only be a duration, well-formed or not. Subtitles ripped from ass files may
+// show arrows in their text, such as "#1 ---> #2", which hold no time boundaries.
+func isSRTTimeBoundaries(line string) bool {
+	idx := strings.Index(line, srtTimeBoundariesSeparator)
+	if idx < 0 {
+		return false
+	}
+	end := strings.Fields(line[idx+len(srtTimeBoundariesSeparator):])
+	return isSRTDurationLike(line[:idx]) || (len(end) > 0 && isSRTDurationLike(end[0]))
+}
+
+// isSRTDurationLike reports whether the text is made of what an .srt duration is made of
+func isSRTDurationLike(i string) bool {
+	i = strings.TrimSpace(i)
+	return strings.Contains(i, ":") && strings.Trim(i, "0123456789:,.- ") == ""
+}
+
 // ReadFromSRT parses an .srt content
 func ReadFromSRT(i io.Reader) (o *Subtitles, err error) {
+	// Read the content at once since whether braces hide comments depends on all of it
+	var b bytes.Buffer
+	if _, err = b.ReadFrom(i); err != nil {
+		err = fmt.Errorf("astisub: reading srt failed: %w", err)
+		return
+	}
+	ssaRip := isSSARip(b.String())
+
 	// Init
 	o = NewSubtitles()
-	var scanner = newScanner(i)
+	var scanner = newScanner(&b)
 
 	// Scan
 	var line string
@@ -57,7 +84,7 @@ func ReadFromSRT(i io.Reader) (o *Subtitles, err error) {
 		}
 
 		// Line contains time boundaries
-		if strings.Contains(line, srtTimeBoundariesSeparator) {
+		if isSRTTimeBoundaries(line) {
 			// Reset style attributes
 			sa = &StyleAttributes{}
 
@@ -107,9 +134,22 @@ func ReadFromSRT(i io.Reader) (o *Subtitles, err error) {
 			// Append subtitle
 			o.Items = append(o.Items, s)
 		} else {
-			// Add text
-			if l := parseTextSrt(line, sa); len(l.Items) > 0 {
-				s.Lines = append(s.Lines, l)
+			// Ass never displays braces: in a rip, those holding no override tag hide
+			// comments
+			if ssaRip {
+				if t := ssaRegexpComment.ReplaceAllString(line, ""); t != line {
+					if line = strings.TrimSpace(t); line == "" {
+						continue
+					}
+				}
+			}
+
+			// Add text. A line ripped from an ass subtitle may hold several lines
+			// of it, each of which is read as an srt line.
+			for _, part := range splitSSALineBreaks(line) {
+				if l := parseTextSrt(part, sa); len(l.Items) > 0 {
+					s.Lines = append(s.Lines, l)
+				}
 			}
 
 			// Alignment applies to the whole subtitle and not only to the text
@@ -201,6 +241,12 @@ func parseTextSrt(i string, sa *StyleAttributes) (o Line) {
 			for _, part := range splitSSAOverrides(raw) {
 				if part.tags != nil {
 					applySRTOverrideTags(sa, part.tags)
+					continue
+				}
+
+				// The text of an ass drawing is the commands tracing its shapes, which
+				// a rip may also have kept without the tag starting the drawing
+				if sa.ssaDrawing || isSSADrawing(part.text) {
 					continue
 				}
 

@@ -408,6 +408,9 @@ type StyleAttributes struct {
 	WebVTTVertical       string
 	WebVTTViewportAnchor string
 	WebVTTWidth          string
+
+	// ssaDrawing is set while reading the drawing of an srt ripped from an ass file
+	ssaDrawing bool
 }
 
 type WebVTTTag struct {

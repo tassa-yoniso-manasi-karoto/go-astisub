@@ -15,15 +15,43 @@ import (
 // made of a backslash, a name and its arguments, the arguments being either
 // parenthesized or running until the next tag. Anything else inside the braces is a
 // comment, which is why only the leading number or color of an argument is read:
-// {\i1 this is ignored\b1}.
+// {\i1 this is ignored\b1}, and why braces holding a tag anywhere are a block, as in
+// {blur3\pos(320,230)} where a rip lost the backslash of the first tag.
 
 // SSA override tag regexps
 var (
-	ssaRegexpOverrideBlock  = regexp.MustCompile(`\{\s*\\[^}]*\}`)
+	ssaRegexpOverrideBlock  = regexp.MustCompile(`\{[^}\\\r\n]*\\[^}\r\n]*\}`)
 	ssaRegexpOverrideColor  = regexp.MustCompile(`^(&H)?([0-9a-fA-F]+)`)
 	ssaRegexpOverrideNumber = regexp.MustCompile(`^[-+]?[0-9]*\.?[0-9]*`)
 	ssaRegexpOverrideTag    = regexp.MustCompile(`\\([0-9]?[a-zA-Z]+)(\([^)]*\)|[^\\]*)`)
 )
+
+// SSA text regexps: the braces holding a comment, the commands of a drawing, which start
+// by moving to a point, and the escapes of a text, its \N hard and \n soft line breaks
+// and its \h hard space
+var (
+	ssaRegexpComment   = regexp.MustCompile(`\{[^}\\\r\n]*\}`)
+	ssaRegexpDrawing   = regexp.MustCompile(`^\s*m(\s+-?[0-9]+(\.[0-9]+)?){2}(\s+([mnlbspc]|-?[0-9]+(\.[0-9]+)?))*\s*$`)
+	ssaRegexpEscape    = regexp.MustCompile(`\\[Nnh]`)
+	ssaRegexpLineBreak = regexp.MustCompile(`\\[Nn]`)
+)
+
+// isSSARip reports whether an srt content was ripped from an ass subtitle: it shows ass
+// escapes or override tags other than the alignment ones srt files borrow from ass.
+// Braces holding no tag are comments in such a content, and may be text in others.
+func isSSARip(t string) bool {
+	if ssaRegexpEscape.MatchString(t) {
+		return true
+	}
+	for _, part := range splitSSAOverrides(t) {
+		for _, tag := range part.tags {
+			if tag.name != "a" && tag.name != "an" {
+				return true
+			}
+		}
+	}
+	return false
+}
 
 // ssaOverrideTag represents an override tag, e.g. `\an8` gives a tag named "an" with the
 // arguments "8". A digit prefixes the name of the tags selecting one of the four colors,
@@ -61,8 +89,47 @@ func splitSSAOverrides(t string) (o []ssaOverridePart) {
 	return
 }
 
+// splitSSALineBreaks splits a text ripped from an ass subtitle into its lines at the line
+// breaks outside its override blocks, \n included as the ssa reader does, and turns its
+// hard spaces into spaces. Each line is trimmed like an srt line and dropped if left
+// empty. A text without such escapes is returned as it is.
+func splitSSALineBreaks(t string) (o []string) {
+	if !ssaRegexpEscape.MatchString(t) {
+		return []string{t}
+	}
+
+	var line strings.Builder
+	flush := func() {
+		if s := strings.TrimSpace(line.String()); s != "" {
+			o = append(o, s)
+		}
+		line.Reset()
+	}
+	var previous int
+	blocks := append(ssaRegexpOverrideBlock.FindAllStringIndex(t, -1), []int{len(t), len(t)})
+	for _, idxs := range blocks {
+		text := strings.ReplaceAll(t[previous:idxs[0]], `\h`, " ")
+		for k, part := range ssaRegexpLineBreak.Split(text, -1) {
+			if k > 0 {
+				flush()
+			}
+			line.WriteString(part)
+		}
+		line.WriteString(t[idxs[0]:idxs[1]])
+		previous = idxs[1]
+	}
+	flush()
+	return
+}
+
+// isSSADrawing reports whether the text is made of drawing commands
+func isSSADrawing(t string) bool {
+	return ssaRegexpDrawing.MatchString(t)
+}
+
 // applySRTOverrideTags updates the srt style attributes with the tags. The tags srt
-// cannot represent (positioning, karaoke, animations, fonts, ...) are ignored
+// cannot represent (positioning, karaoke, animations, fonts, ...) are ignored, the
+// drawing mode only telling which text is no text
 func applySRTOverrideTags(sa *StyleAttributes, tags []ssaOverrideTag) {
 	for _, tag := range tags {
 		switch tag.name {
@@ -78,6 +145,8 @@ func applySRTOverrideTags(sa *StyleAttributes, tags []ssaOverrideTag) {
 			sa.SRTUnderline = ssaOverrideBool(tag.args, sa.SRTUnderline)
 		case "c", "1c":
 			sa.SRTColor = ssaOverrideColor(tag.args, sa.SRTColor)
+		case "p": // a scale above 0 starts a drawing, 0 ends it
+			sa.ssaDrawing = ssaOverrideBool(tag.args, sa.ssaDrawing)
 		}
 	}
 }
